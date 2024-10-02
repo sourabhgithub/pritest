@@ -1,56 +1,81 @@
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
-import org.springframework.orm.jpa.JpaTransactionManager;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.PropertySource;
-import org.springframework.core.env.Environment;
-import org.springframework.beans.factory.annotation.Autowired;
-import javax.sql.DataSource;
-import java.util.Properties;
-
 @Configuration
-@PropertySource("classpath:application.properties")  // Load properties from application.properties
-public class DatabaseConfig {
+@EnableBatchProcessing
+public class BatchJobConfig {
 
     @Autowired
-    private Environment env;
+    private JobBuilderFactory jobBuilderFactory;
 
-    // Bean definition for EncryptedDataSource
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+    @Autowired
+    private DataSource dataSource;
+
+    // Job definition
     @Bean
-    public DataSource encryptedDataSource() {
-        EncryptedDataSource dataSource = new EncryptedDataSource();
-        dataSource.setDriverClassName(env.getProperty("db.driverClass"));
-        dataSource.setUrl(env.getProperty("db.connectionURL"));
-        dataSource.setUsername(env.getProperty("db.username"));
-        dataSource.setPassword(env.getProperty("db.password"));
-        return dataSource;
+    public Job cashExceptionsProcessJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
+        return jobBuilderFactory.get("cashExceptionsProcessJob")
+                .start(dtbReconExceptionsStep(transactionManager))
+                .next(createDtbReconExceptionsStep(transactionManager))
+                .listener(jobListener())  // Attach a listener to the job
+                .build();
     }
 
-    // Bean definition for EntityManagerFactory
+    // Step 1 definition with step scope
     @Bean
-    public LocalContainerEntityManagerFactoryBean entityManagerFactory() {
-        LocalContainerEntityManagerFactoryBean entityManagerFactory = new LocalContainerEntityManagerFactoryBean();
-        entityManagerFactory.setDataSource(encryptedDataSource());
-        entityManagerFactory.setPackagesToScan("com.baml.cash");  // Adjust the package to your entity package
-
-        Properties jpaProperties = new Properties();
-        jpaProperties.put("hibernate.dialect", "org.hibernate.dialect.Oracle12cDialect");
-        jpaProperties.put("javax.persistence.schema-generation.database.action", "none");
-        jpaProperties.put("hibernate.ejb.use_class_enhancer", "true");
-        jpaProperties.put("hibernate.show_sql", "true");
-
-        entityManagerFactory.setJpaProperties(jpaProperties);
-        entityManagerFactory.setPersistenceProviderClass(org.hibernate.jpa.HibernatePersistenceProvider.class);
-        return entityManagerFactory;
+    @StepScope  // Step-scoped bean for tasklet
+    public Step dtbReconExceptionsStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("dtbReconExceptionsStep")
+                .tasklet(dtbReconExceptionsTasklet())
+                .listener(promotionListener())
+                .transactionManager(transactionManager)
+                .build();
     }
 
-    // Bean definition for JPA Transaction Manager
+    // Step 2 definition with step scope
     @Bean
-    public PlatformTransactionManager transactionManager() {
-        JpaTransactionManager transactionManager = new JpaTransactionManager();
-        transactionManager.setEntityManagerFactory(entityManagerFactory().getObject());
-        return transactionManager;
+    @StepScope  // Step-scoped bean for tasklet
+    public Step createDtbReconExceptionsStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("createDtbReconExceptionsStep")
+                .tasklet(createDtbReconExceptionsTasklet())
+                .listener(promotionListener())
+                .transactionManager(transactionManager)
+                .build();
+    }
+
+    // Tasklet for Step 1 with Step Scope
+    @Bean
+    @StepScope  // Step-scoped tasklet bean
+    public ProcessReconExceptionsTasklet dtbReconExceptionsTasklet() {
+        ProcessReconExceptionsTasklet tasklet = new ProcessReconExceptionsTasklet();
+        tasklet.setDataSource(dataSource);
+        tasklet.setAcctPlanRefSql("${batch.service.acct.plan.ref.query}");
+        return tasklet;
+    }
+
+    // Tasklet for Step 2 with Step Scope
+    @Bean
+    @StepScope  // Step-scoped tasklet bean
+    public CreateReconExceptionsTasklet createDtbReconExceptionsTasklet() {
+        CreateReconExceptionsTasklet tasklet = new CreateReconExceptionsTasklet();
+        tasklet.setDataSource(dataSource);
+        tasklet.setCashTranStatExceptInsertSql("${cash.tran.stat.except.insert}");
+        return tasklet;
+    }
+
+    // Listener definition
+    @Bean
+    @JobScope  // Job-scoped listener bean
+    public CashExceptionsBatchJobListener jobListener() {
+        return new CashExceptionsBatchJobListener();
+    }
+
+    // Execution Context Promotion Listener
+    @Bean
+    @StepScope
+    public ExecutionContextPromotionListener promotionListener() {
+        ExecutionContextPromotionListener listener = new ExecutionContextPromotionListener();
+        listener.setKeys(new String[]{"domainDataKey", "cashPayloadData", "exceptTranList"});
+        return listener;
     }
 }
