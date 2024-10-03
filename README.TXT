@@ -23,7 +23,7 @@ import org.springframework.stereotype.Component;
 
 @Configuration
 @EnableBatchProcessing
-public class CashExceptionsBatchJobConfig {
+public class TchReconBatchJobConfig {
 
     @Autowired
     private JobBuilderFactory jobBuilderFactory;
@@ -38,28 +38,32 @@ public class CashExceptionsBatchJobConfig {
     private LoadReferenceDataTasklet loadReferenceDataTasklet;
 
     @Autowired
-    private ProcessCashExceptionsTasklet cashExceptionsTasklet;
+    private ProcessRejectedTransactionsTasklet rejectedTransactionsTasklet;
 
     @Autowired
-    private CreateExceptionEntriesTasklet createExceptionEntriesTasklet;
+    private ProcessUnmatchedStatusTransTasklet unmatchedStatusTransTasklet;
 
     @Autowired
-    private LoadRS2InvalidDataTasklet loadRS2InvalidDataTasklet;
+    private TchReconProcessor tchReconProcessor;
 
     @Autowired
-    private CashExceptionsBatchJobListener jobListener;
+    private EndOfJobTasklet endOfJobTasklet;
 
     @Autowired
     private ExecutionContextPromotionListener promotionListener;
 
+    @Autowired
+    private TchReconBatchJobListener jobListener;
+
     // Define Job
     @Bean
-    public Job cashExceptionsProcessJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
-        return jobBuilderFactory.get("cashExceptionsProcessJob")
+    public Job tchReconProcessJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
+        return jobBuilderFactory.get("tchReconProcessJob")
                 .start(loadRefDataStep(transactionManager))
-                .next(cashExceptionsStep(transactionManager))
-                .next(createExceptionEntriesStep(transactionManager))
-                .next(loadRS2InvalidDataStep(transactionManager))
+                .next(processReversalStep(transactionManager))
+                .next(processUnmatchStatusStep(transactionManager))
+                .next(reconProcessStep(transactionManager))
+                .next(endOfJobProcessStep(transactionManager))
                 .listener(jobListener)  // Attach the job listener
                 .build();
     }
@@ -75,34 +79,48 @@ public class CashExceptionsBatchJobConfig {
                 .build();
     }
 
-    // Step 2: Cash Exceptions Step
+    // Step 2: Process Rejected Transactions Step
     @Bean
     @JobScope
-    public Step cashExceptionsStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("cashExceptionsStep")
-                .tasklet(cashExceptionsTasklet)
+    public Step processReversalStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("processReversalStep")
+                .tasklet(rejectedTransactionsTasklet)
                 .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
     }
 
-    // Step 3: Create Exception Entries Step
+    // Step 3: Process Unmatched Status Step
     @Bean
     @JobScope
-    public Step createExceptionEntriesStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("createExceptionEntriesStep")
-                .tasklet(createExceptionEntriesTasklet)
+    public Step processUnmatchStatusStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("processUnmatchStatusStep")
+                .tasklet(unmatchedStatusTransTasklet)
                 .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
     }
 
-    // Step 4: Load RS2 Invalid Data Step
+    // Step 4: Reconciliation Process Step
     @Bean
     @JobScope
-    public Step loadRS2InvalidDataStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("loadRS2InvalidDataStep")
-                .tasklet(loadRS2InvalidDataTasklet)
+    public Step reconProcessStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("reconProcessStep")
+                .<TchReconViewObject, TchReconViewObject>chunk(100)
+                .reader(viewItemReader(null))
+                .processor(tchReconProcessor)
+                .writer(compositeItemWriter())
+                .listener(promotionListener)  // Attach step listener
+                .transactionManager(transactionManager)
+                .build();
+    }
+
+    // Step 5: End of Job Process Step
+    @Bean
+    @JobScope
+    public Step endOfJobProcessStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("endOfJobProcessStep")
+                .tasklet(endOfJobTasklet)
                 .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
@@ -135,107 +153,79 @@ public class CashExceptionsBatchJobConfig {
 
     @Bean
     @StepScope
-    public ProcessCashExceptionsTasklet cashExceptionsTasklet(
-            @Value("#{jobParameters['feed.recon.acct.ent.missing.query']}") String tranStatSql,
-            @Value("#{jobParameters['feed.recon.acct.ent.stat.query']}") String tranStatInsertSql,
-            @Value("#{jobParameters['feed.recon.acct.ent.impacs.query']}") String cashStatInsertSql,
-            @Value("#{jobParameters['feed.recon.acct.plan.ref.query']}") String acctPlanInsertSql) {
-        ProcessCashExceptionsTasklet tasklet = new ProcessCashExceptionsTasklet();
+    public ProcessRejectedTransactionsTasklet rejectedTransactionsTasklet(
+            @Value("${tch.recon.reject.acct.missing.query}") String missingQuery,
+            @Value("${tch.recon.reject.acct.insert}") String insertSql) {
+        ProcessRejectedTransactionsTasklet tasklet = new ProcessRejectedTransactionsTasklet();
         tasklet.setDataSource(dataSource);
-        tasklet.setTranStatSql(tranStatSql);
-        tasklet.setTranStatInsertSql(tranStatInsertSql);
-        tasklet.setCashStatInsertSql(cashStatInsertSql);
-        tasklet.setAcctPlanInsertSql(acctPlanInsertSql);
+        tasklet.setMissingQuery(missingQuery);
+        tasklet.setInsertSql(insertSql);
         return tasklet;
     }
 
     @Bean
     @StepScope
-    public CreateExceptionEntriesTasklet createExceptionEntriesTasklet(
-            @Value("#{jobParameters['recon.except.ent.insert']}") String exceptEntInsert,
-            @Value("#{jobParameters['recon.except.ent.rs2v.insert']}") String exceptEntRS2vInsert) {
-        CreateExceptionEntriesTasklet tasklet = new CreateExceptionEntriesTasklet();
+    public ProcessUnmatchedStatusTransTasklet unmatchedStatusTransTasklet(
+            @Value("${tch.recon.unmatched.status.query}") String unmatchedStatusQuery,
+            @Value("${tch.recon.unmatched.status.insert}") String unmatchedStatusInsertSql) {
+        ProcessUnmatchedStatusTransTasklet tasklet = new ProcessUnmatchedStatusTransTasklet();
         tasklet.setDataSource(dataSource);
-        tasklet.setExceptEntInsert(exceptEntInsert);
+        tasklet.setUnmatchedStatusQuery(unmatchedStatusQuery);
+        tasklet.setUnmatchedStatusInsertSql(unmatchedStatusInsertSql);
+        return tasklet;
+    }
+
+    @Bean
+    @StepScope
+    public EndOfJobTasklet endOfJobTasklet(
+            @Value("${tch.recon.except.ent.rs2v.insert}") String exceptEntRS2vInsert) {
+        EndOfJobTasklet tasklet = new EndOfJobTasklet();
+        tasklet.setDataSource(dataSource);
         tasklet.setExceptEntRS2vInsert(exceptEntRS2vInsert);
         return tasklet;
     }
 
+    // Define the Reader, Processor, and Writer beans
     @Bean
     @StepScope
-    public LoadRS2InvalidDataTasklet loadRS2InvalidDataTasklet(
-            @Value("#{jobParameters['feed.mds.except.query']}") String feedMDSExceptQuery,
-            @Value("#{jobParameters['feed.mds.except.invalid.query']}") String feedMDSExceptInvalidQuery) {
-        LoadRS2InvalidDataTasklet tasklet = new LoadRS2InvalidDataTasklet();
-        tasklet.setDataSource(dataSource);
-        tasklet.setFeedMDSExceptQuery(feedMDSExceptQuery);
-        tasklet.setFeedMDSExceptInvalidQuery(feedMDSExceptInvalidQuery);
-        return tasklet;
+    public JdbcCursorItemReader<TchReconViewObject> viewItemReader(@Value("${tch.recon.view.query}") String sql) {
+        JdbcCursorItemReader<TchReconViewObject> reader = new JdbcCursorItemReader<>();
+        reader.setDataSource(dataSource);
+        reader.setSql(sql);
+        reader.setRowMapper(new TchReconRowMapper());  // Assuming TchReconRowMapper exists
+        return reader;
+    }
+
+    @Bean
+    @StepScope
+    public CompositeItemWriter<TchReconViewObject> compositeItemWriter() {
+        CompositeItemWriter<TchReconViewObject> writer = new CompositeItemWriter<>();
+        writer.setDelegates(Arrays.asList(acctEntryImpacsExceptItemWriter(), cashTranExceptItemWriter()));
+        return writer;
+    }
+
+    @Bean
+    @StepScope
+    public JdbcBatchItemWriter<TchReconViewObject> acctEntryImpacsExceptItemWriter() {
+        JdbcBatchItemWriter<TchReconViewObject> writer = new JdbcBatchItemWriter<>();
+        writer.setDataSource(dataSource);
+        writer.setSql("${tch.recon.acct.ent.impacs.except.insert}");
+        return writer;
+    }
+
+    @Bean
+    @StepScope
+    public JdbcBatchItemWriter<TchReconViewObject> cashTranExceptItemWriter() {
+        JdbcBatchItemWriter<TchReconViewObject> writer = new JdbcBatchItemWriter<>();
+        writer.setDataSource(dataSource);
+        writer.setSql("${tch.recon.cash.tran.except.insert}");
+        return writer;
     }
 
     // Job Listener Definition
     @Bean
     @JobScope
-    public CashExceptionsBatchJobListener jobListener() {
-        return new CashExceptionsBatchJobListener();
+    public TchReconBatchJobListener jobListener() {
+        return new TchReconBatchJobListener();
     }
 }
-
-// Tasklet Class Definitions
-
-@Component
-@StepScope
-class LoadReferenceDataTasklet implements Tasklet {
-
-    @Value("${batch.service.acct.plan.ref.query}")
-    private String acctPlanRefSql;
-
-    @Value("${batch.service.holiday.ref.query}")
-    private String holidayRefSql;
-
-    @Value("${batch.service.state.iso.ref.query}")
-    private String stateIsoRefSql;
-
-    @Value("${batch.service.tran.code.ref.query}")
-    private String tranCodeRefSql;
-
-    @Override
-    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
-        // Tasklet logic here
-        return RepeatStatus.FINISHED;
-    }
-
-    public void setAcctPlanRefSql(String acctPlanRefSql) { this.acctPlanRefSql = acctPlanRefSql; }
-    public void setHolidayRefSql(String holidayRefSql) { this.holidayRefSql = holidayRefSql; }
-    public void setStateIsoRefSql(String stateIsoRefSql) { this.stateIsoRefSql = stateIsoRefSql; }
-    public void setTranCodeRefSql(String tranCodeRefSql) { this.tranCodeRefSql = tranCodeRefSql; }
-}
-
-@Component
-@StepScope
-class ProcessCashExceptionsTasklet implements Tasklet {
-
-    @Value("#{jobParameters['feed.recon.acct.ent.missing.query']}")
-    private String tranStatSql;
-
-    @Value("#{jobParameters['feed.recon.acct.ent.stat.query']}")
-    private String tranStatInsertSql;
-
-    @Value("#{jobParameters['feed.recon.acct.ent.impacs.query']}")
-    private String cashStatInsertSql;
-
-    @Value("#{jobParameters['feed.recon.acct.plan.ref.query']}")
-    private String acctPlanInsertSql;
-
-    @Autowired
-    private DataSource dataSource;
-
-    @Override
-    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
-        // Tasklet logic here
-        return RepeatStatus.FINISHED;
-    }
-
-    public void setDataSource(DataSource dataSource) { this.dataSource = dataSource; }
-    public void setTranStatSql(String tranStatSql) { this.tranStatSql = tranStatSql; }
-    public void setTranStatInsertSql(String tranStatInsertSql) {
