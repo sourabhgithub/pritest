@@ -8,22 +8,22 @@ import org.springframework.batch.core.configuration.annotation.JobBuilderFactory
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
 import org.springframework.batch.core.listener.ExecutionContextPromotionListener;
 import org.springframework.batch.core.repository.JobRepository;
-import org.springframework.batch.core.scope.context.JobContext;
 import org.springframework.batch.core.scope.context.StepContext;
+import org.springframework.batch.core.scope.context.JobContext;
+import org.springframework.batch.core.scope.StepScope;
+import org.springframework.batch.core.scope.JobScope;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.batch.core.scope.StepScope;
-import org.springframework.batch.core.scope.JobScope;
-import org.springframework.stereotype.Component;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.stereotype.Component;
 
 @Configuration
 @EnableBatchProcessing
-public class BatchJobConfig {
+public class CashExceptionsBatchJobConfig {
 
     @Autowired
     private JobBuilderFactory jobBuilderFactory;
@@ -38,10 +38,13 @@ public class BatchJobConfig {
     private LoadReferenceDataTasklet loadReferenceDataTasklet;
 
     @Autowired
-    private ProcessReconExceptionsTasklet zelleMcReconExceptionsTasklet;
+    private ProcessCashExceptionsTasklet cashExceptionsTasklet;
 
     @Autowired
-    private CreateReconExceptionsTasklet createZelleMcReconExceptionsTasklet;
+    private CreateExceptionEntriesTasklet createExceptionEntriesTasklet;
+
+    @Autowired
+    private LoadRS2InvalidDataTasklet loadRS2InvalidDataTasklet;
 
     @Autowired
     private CashExceptionsBatchJobListener jobListener;
@@ -53,30 +56,54 @@ public class BatchJobConfig {
     @Bean
     public Job cashExceptionsProcessJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
         return jobBuilderFactory.get("cashExceptionsProcessJob")
-                .start(zelleMcReconExceptionsStep(transactionManager))  // Step 1
-                .next(createZelleMcReconExceptionsStep(transactionManager))  // Step 2
+                .start(loadRefDataStep(transactionManager))
+                .next(cashExceptionsStep(transactionManager))
+                .next(createExceptionEntriesStep(transactionManager))
+                .next(loadRS2InvalidDataStep(transactionManager))
                 .listener(jobListener)  // Attach the job listener
                 .build();
     }
 
-    // Step 1 Definition
+    // Step 1: Load Reference Data Step
     @Bean
     @JobScope
-    public Step zelleMcReconExceptionsStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("zelleMcReconExceptionsStep")
-                .tasklet(zelleMcReconExceptionsTasklet)
-                .listener(promotionListener)  // Attach the step listener
+    public Step loadRefDataStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("loadRefDataStep")
+                .tasklet(loadReferenceDataTasklet)
+                .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
     }
 
-    // Step 2 Definition
+    // Step 2: Cash Exceptions Step
     @Bean
     @JobScope
-    public Step createZelleMcReconExceptionsStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("createZelleMcReconExceptionsStep")
-                .tasklet(createZelleMcReconExceptionsTasklet)
-                .listener(promotionListener)  // Attach the step listener
+    public Step cashExceptionsStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("cashExceptionsStep")
+                .tasklet(cashExceptionsTasklet)
+                .listener(promotionListener)  // Attach step listener
+                .transactionManager(transactionManager)
+                .build();
+    }
+
+    // Step 3: Create Exception Entries Step
+    @Bean
+    @JobScope
+    public Step createExceptionEntriesStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("createExceptionEntriesStep")
+                .tasklet(createExceptionEntriesTasklet)
+                .listener(promotionListener)  // Attach step listener
+                .transactionManager(transactionManager)
+                .build();
+    }
+
+    // Step 4: Load RS2 Invalid Data Step
+    @Bean
+    @JobScope
+    public Step loadRS2InvalidDataStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("loadRS2InvalidDataStep")
+                .tasklet(loadRS2InvalidDataTasklet)
+                .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
     }
@@ -90,7 +117,7 @@ public class BatchJobConfig {
         return listener;
     }
 
-    // Define Tasklets
+    // Tasklet Definitions with Scope
     @Bean
     @StepScope
     public LoadReferenceDataTasklet loadReferenceDataTasklet(
@@ -108,33 +135,45 @@ public class BatchJobConfig {
 
     @Bean
     @StepScope
-    public ProcessReconExceptionsTasklet zelleMcReconExceptionsTasklet(
-            @Value("#{jobParameters['zelle.mc.recon.missing.in.cash.query']}") String missingInCashSql,
-            @Value("#{jobParameters['zelle.mc.recon.missing.in.dtb.query']}") String missingInDtbSql,
-            @Value("#{jobParameters['batch.service.acct.plan.ref.query']}") String acctPlanRefSql) {
-        ProcessReconExceptionsTasklet tasklet = new ProcessReconExceptionsTasklet();
+    public ProcessCashExceptionsTasklet cashExceptionsTasklet(
+            @Value("#{jobParameters['feed.recon.acct.ent.missing.query']}") String tranStatSql,
+            @Value("#{jobParameters['feed.recon.acct.ent.stat.query']}") String tranStatInsertSql,
+            @Value("#{jobParameters['feed.recon.acct.ent.impacs.query']}") String cashStatInsertSql,
+            @Value("#{jobParameters['feed.recon.acct.plan.ref.query']}") String acctPlanInsertSql) {
+        ProcessCashExceptionsTasklet tasklet = new ProcessCashExceptionsTasklet();
         tasklet.setDataSource(dataSource);
-        tasklet.setMissingInCashSql(missingInCashSql);
-        tasklet.setMissingInDtbSql(missingInDtbSql);
-        tasklet.setAcctPlanRefSql(acctPlanRefSql);
+        tasklet.setTranStatSql(tranStatSql);
+        tasklet.setTranStatInsertSql(tranStatInsertSql);
+        tasklet.setCashStatInsertSql(cashStatInsertSql);
+        tasklet.setAcctPlanInsertSql(acctPlanInsertSql);
         return tasklet;
     }
 
     @Bean
     @StepScope
-    public CreateReconExceptionsTasklet createZelleMcReconExceptionsTasklet(
-            @Value("#{jobParameters['cash.tran.except.insert']}") String cashTranExceptInsert,
-            @Value("#{jobParameters['cash.tran.stat.except.insert']}") String cashTranStatExceptInsert,
-            @Value("#{jobParameters['acct.ent.impacs.except.insert']}") String acctEntImpacsExceptInsert) {
-        CreateReconExceptionsTasklet tasklet = new CreateReconExceptionsTasklet();
+    public CreateExceptionEntriesTasklet createExceptionEntriesTasklet(
+            @Value("#{jobParameters['recon.except.ent.insert']}") String exceptEntInsert,
+            @Value("#{jobParameters['recon.except.ent.rs2v.insert']}") String exceptEntRS2vInsert) {
+        CreateExceptionEntriesTasklet tasklet = new CreateExceptionEntriesTasklet();
         tasklet.setDataSource(dataSource);
-        tasklet.setCashTranExceptInsert(cashTranExceptInsert);
-        tasklet.setCashTranStatExceptInsert(cashTranStatExceptInsert);
-        tasklet.setAcctEntImpacsExceptInsert(acctEntImpacsExceptInsert);
+        tasklet.setExceptEntInsert(exceptEntInsert);
+        tasklet.setExceptEntRS2vInsert(exceptEntRS2vInsert);
         return tasklet;
     }
 
-    // Job Listener Bean Definition
+    @Bean
+    @StepScope
+    public LoadRS2InvalidDataTasklet loadRS2InvalidDataTasklet(
+            @Value("#{jobParameters['feed.mds.except.query']}") String feedMDSExceptQuery,
+            @Value("#{jobParameters['feed.mds.except.invalid.query']}") String feedMDSExceptInvalidQuery) {
+        LoadRS2InvalidDataTasklet tasklet = new LoadRS2InvalidDataTasklet();
+        tasklet.setDataSource(dataSource);
+        tasklet.setFeedMDSExceptQuery(feedMDSExceptQuery);
+        tasklet.setFeedMDSExceptInvalidQuery(feedMDSExceptInvalidQuery);
+        return tasklet;
+    }
+
+    // Job Listener Definition
     @Bean
     @JobScope
     public CashExceptionsBatchJobListener jobListener() {
@@ -143,6 +182,7 @@ public class BatchJobConfig {
 }
 
 // Tasklet Class Definitions
+
 @Component
 @StepScope
 class LoadReferenceDataTasklet implements Tasklet {
@@ -173,44 +213,19 @@ class LoadReferenceDataTasklet implements Tasklet {
 
 @Component
 @StepScope
-class ProcessReconExceptionsTasklet implements Tasklet {
+class ProcessCashExceptionsTasklet implements Tasklet {
 
-    @Value("#{jobParameters['zelle.mc.recon.missing.in.cash.query']}")
-    private String missingInCashSql;
+    @Value("#{jobParameters['feed.recon.acct.ent.missing.query']}")
+    private String tranStatSql;
 
-    @Value("#{jobParameters['zelle.mc.recon.missing.in.dtb.query']}")
-    private String missingInDtbSql;
+    @Value("#{jobParameters['feed.recon.acct.ent.stat.query']}")
+    private String tranStatInsertSql;
 
-    @Value("#{jobParameters['batch.service.acct.plan.ref.query']}")
-    private String acctPlanRefSql;
+    @Value("#{jobParameters['feed.recon.acct.ent.impacs.query']}")
+    private String cashStatInsertSql;
 
-    @Autowired
-    private DataSource dataSource;
-
-    @Override
-    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
-        // Tasklet logic here
-        return RepeatStatus.FINISHED;
-    }
-
-    public void setDataSource(DataSource dataSource) { this.dataSource = dataSource; }
-    public void setMissingInCashSql(String missingInCashSql) { this.missingInCashSql = missingInCashSql; }
-    public void setMissingInDtbSql(String missingInDtbSql) { this.missingInDtbSql = missingInDtbSql; }
-    public void setAcctPlanRefSql(String acctPlanRefSql) { this.acctPlanRefSql = acctPlanRefSql; }
-}
-
-@Component
-@StepScope
-class CreateReconExceptionsTasklet implements Tasklet {
-
-    @Value("#{jobParameters['cash.tran.except.insert']}")
-    private String cashTranExceptInsert;
-
-    @Value("#{jobParameters['cash.tran.stat.except.insert']}")
-    private String cashTranStatExceptInsert;
-
-    @Value("#{jobParameters['acct.ent.impacs.except.insert']}")
-    private String acctEntImpacsExceptInsert;
+    @Value("#{jobParameters['feed.recon.acct.plan.ref.query']}")
+    private String acctPlanInsertSql;
 
     @Autowired
     private DataSource dataSource;
@@ -222,7 +237,5 @@ class CreateReconExceptionsTasklet implements Tasklet {
     }
 
     public void setDataSource(DataSource dataSource) { this.dataSource = dataSource; }
-    public void setCashTranExceptInsert(String cashTranExceptInsert) { this.cashTranExceptInsert = cashTranExceptInsert; }
-    public void setCashTranStatExceptInsert(String cashTranStatExceptInsert) { this.cashTranStatExceptInsert = cashTranStatExceptInsert; }
-    public void setAcctEntImpacsExceptInsert(String acctEntImpacsExceptInsert) { this.acctEntImpacsExceptInsert = acctEntImpacsExceptInsert; }
-}
+    public void setTranStatSql(String tranStatSql) { this.tranStatSql = tranStatSql; }
+    public void setTranStatInsertSql(String tranStatInsertSql) {
