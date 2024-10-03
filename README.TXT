@@ -23,7 +23,7 @@ import org.springframework.stereotype.Component;
 
 @Configuration
 @EnableBatchProcessing
-public class ZelleMcReconJobBatchConfig {
+public class ZelleVisaReconJobBatchConfig {
 
     @Autowired
     private JobBuilderFactory jobBuilderFactory;
@@ -38,10 +38,10 @@ public class ZelleMcReconJobBatchConfig {
     private LoadReferenceDataTasklet loadReferenceDataTasklet;
 
     @Autowired
-    private ProcessReconExceptionsTasklet zelleMcReconExceptionsTasklet;
+    private ProcessReconExceptionsTasklet zelleVisaReconExceptionsTasklet;
 
     @Autowired
-    private CreateReconExceptionsTasklet createZelleMcReconExceptionsTasklet;
+    private CreateReconExceptionsTasklet createZelleVisaReconExceptionsTasklet;
 
     @Autowired
     private CashExceptionsBatchJobListener jobListener;
@@ -53,29 +53,29 @@ public class ZelleMcReconJobBatchConfig {
     @Bean
     public Job cashExceptionsProcessJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
         return jobBuilderFactory.get("cashExceptionsProcessJob")
-                .start(zelleMcReconExceptionsStep(transactionManager))
-                .next(createZelleMcReconExceptionsStep(transactionManager))
+                .start(zelleVisaReconExceptionsStep(transactionManager))
+                .next(createZelleVisaReconExceptionsStep(transactionManager))
                 .listener(jobListener)  // Attach the job listener
                 .build();
     }
 
-    // Step 1: Zelle Mc Recon Exceptions Step
+    // Step 1: Zelle Visa Recon Exceptions Step
     @Bean
     @JobScope
-    public Step zelleMcReconExceptionsStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("zelleMcReconExceptionsStep")
-                .tasklet(zelleMcReconExceptionsTasklet)
+    public Step zelleVisaReconExceptionsStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("zelleVisaReconExceptionsStep")
+                .tasklet(zelleVisaReconExceptionsTasklet)
                 .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
     }
 
-    // Step 2: Create Zelle Mc Recon Exceptions Step
+    // Step 2: Create Zelle Visa Recon Exceptions Step
     @Bean
     @JobScope
-    public Step createZelleMcReconExceptionsStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("createZelleMcReconExceptionsStep")
-                .tasklet(createZelleMcReconExceptionsTasklet)
+    public Step createZelleVisaReconExceptionsStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("createZelleVisaReconExceptionsStep")
+                .tasklet(createZelleVisaReconExceptionsTasklet)
                 .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
@@ -108,7 +108,7 @@ public class ZelleMcReconJobBatchConfig {
 
     @Bean
     @StepScope
-    public ProcessReconExceptionsTasklet zelleMcReconExceptionsTasklet(
+    public ProcessReconExceptionsTasklet zelleVisaReconExceptionsTasklet(
             @Value("${zelle.mc.recon.missing.in.cash.query}") String missingInCashSql,
             @Value("${zelle.mc.recon.missing.in.dtb.query}") String missingInDtbSql,
             @Value("${batch.service.acct.plan.ref.query}") String acctPlanRefSql) {
@@ -122,7 +122,7 @@ public class ZelleMcReconJobBatchConfig {
 
     @Bean
     @StepScope
-    public CreateReconExceptionsTasklet createZelleMcReconExceptionsTasklet(
+    public CreateReconExceptionsTasklet createZelleVisaReconExceptionsTasklet(
             @Value("${cash.tran.except.insert}") String cashTranExceptInsert,
             @Value("${cash.tran.stat.except.insert}") String cashTranStatExceptInsert,
             @Value("${acct.ent.impacs.except.insert}") String acctEntImpacsExceptInsert) {
