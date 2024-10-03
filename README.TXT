@@ -23,7 +23,7 @@ import org.springframework.stereotype.Component;
 
 @Configuration
 @EnableBatchProcessing
-public class TchReconBatchJobConfig {
+public class ZelleMcReconJobBatchConfig {
 
     @Autowired
     private JobBuilderFactory jobBuilderFactory;
@@ -38,89 +38,44 @@ public class TchReconBatchJobConfig {
     private LoadReferenceDataTasklet loadReferenceDataTasklet;
 
     @Autowired
-    private ProcessRejectedTransactionsTasklet rejectedTransactionsTasklet;
+    private ProcessReconExceptionsTasklet zelleMcReconExceptionsTasklet;
 
     @Autowired
-    private ProcessUnmatchedStatusTransTasklet unmatchedStatusTransTasklet;
+    private CreateReconExceptionsTasklet createZelleMcReconExceptionsTasklet;
 
     @Autowired
-    private TchReconProcessor tchReconProcessor;
-
-    @Autowired
-    private EndOfJobTasklet endOfJobTasklet;
+    private CashExceptionsBatchJobListener jobListener;
 
     @Autowired
     private ExecutionContextPromotionListener promotionListener;
 
-    @Autowired
-    private TchReconBatchJobListener jobListener;
-
     // Define Job
     @Bean
-    public Job tchReconProcessJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
-        return jobBuilderFactory.get("tchReconProcessJob")
-                .start(loadRefDataStep(transactionManager))
-                .next(processReversalStep(transactionManager))
-                .next(processUnmatchStatusStep(transactionManager))
-                .next(reconProcessStep(transactionManager))
-                .next(endOfJobProcessStep(transactionManager))
+    public Job cashExceptionsProcessJob(JobRepository jobRepository, PlatformTransactionManager transactionManager) {
+        return jobBuilderFactory.get("cashExceptionsProcessJob")
+                .start(zelleMcReconExceptionsStep(transactionManager))
+                .next(createZelleMcReconExceptionsStep(transactionManager))
                 .listener(jobListener)  // Attach the job listener
                 .build();
     }
 
-    // Step 1: Load Reference Data Step
+    // Step 1: Zelle Mc Recon Exceptions Step
     @Bean
     @JobScope
-    public Step loadRefDataStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("loadRefDataStep")
-                .tasklet(loadReferenceDataTasklet)
+    public Step zelleMcReconExceptionsStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("zelleMcReconExceptionsStep")
+                .tasklet(zelleMcReconExceptionsTasklet)
                 .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
     }
 
-    // Step 2: Process Rejected Transactions Step
+    // Step 2: Create Zelle Mc Recon Exceptions Step
     @Bean
     @JobScope
-    public Step processReversalStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("processReversalStep")
-                .tasklet(rejectedTransactionsTasklet)
-                .listener(promotionListener)  // Attach step listener
-                .transactionManager(transactionManager)
-                .build();
-    }
-
-    // Step 3: Process Unmatched Status Step
-    @Bean
-    @JobScope
-    public Step processUnmatchStatusStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("processUnmatchStatusStep")
-                .tasklet(unmatchedStatusTransTasklet)
-                .listener(promotionListener)  // Attach step listener
-                .transactionManager(transactionManager)
-                .build();
-    }
-
-    // Step 4: Reconciliation Process Step
-    @Bean
-    @JobScope
-    public Step reconProcessStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("reconProcessStep")
-                .<TchReconViewObject, TchReconViewObject>chunk(100)
-                .reader(viewItemReader(null))
-                .processor(tchReconProcessor)
-                .writer(compositeItemWriter())
-                .listener(promotionListener)  // Attach step listener
-                .transactionManager(transactionManager)
-                .build();
-    }
-
-    // Step 5: End of Job Process Step
-    @Bean
-    @JobScope
-    public Step endOfJobProcessStep(PlatformTransactionManager transactionManager) {
-        return stepBuilderFactory.get("endOfJobProcessStep")
-                .tasklet(endOfJobTasklet)
+    public Step createZelleMcReconExceptionsStep(PlatformTransactionManager transactionManager) {
+        return stepBuilderFactory.get("createZelleMcReconExceptionsStep")
+                .tasklet(createZelleMcReconExceptionsTasklet)
                 .listener(promotionListener)  // Attach step listener
                 .transactionManager(transactionManager)
                 .build();
@@ -153,79 +108,121 @@ public class TchReconBatchJobConfig {
 
     @Bean
     @StepScope
-    public ProcessRejectedTransactionsTasklet rejectedTransactionsTasklet(
-            @Value("${tch.recon.reject.acct.missing.query}") String missingQuery,
-            @Value("${tch.recon.reject.acct.insert}") String insertSql) {
-        ProcessRejectedTransactionsTasklet tasklet = new ProcessRejectedTransactionsTasklet();
+    public ProcessReconExceptionsTasklet zelleMcReconExceptionsTasklet(
+            @Value("${zelle.mc.recon.missing.in.cash.query}") String missingInCashSql,
+            @Value("${zelle.mc.recon.missing.in.dtb.query}") String missingInDtbSql,
+            @Value("${batch.service.acct.plan.ref.query}") String acctPlanRefSql) {
+        ProcessReconExceptionsTasklet tasklet = new ProcessReconExceptionsTasklet();
         tasklet.setDataSource(dataSource);
-        tasklet.setMissingQuery(missingQuery);
-        tasklet.setInsertSql(insertSql);
+        tasklet.setMissingInCashSql(missingInCashSql);
+        tasklet.setMissingInDtbSql(missingInDtbSql);
+        tasklet.setAcctPlanRefSql(acctPlanRefSql);
         return tasklet;
     }
 
     @Bean
     @StepScope
-    public ProcessUnmatchedStatusTransTasklet unmatchedStatusTransTasklet(
-            @Value("${tch.recon.unmatched.status.query}") String unmatchedStatusQuery,
-            @Value("${tch.recon.unmatched.status.insert}") String unmatchedStatusInsertSql) {
-        ProcessUnmatchedStatusTransTasklet tasklet = new ProcessUnmatchedStatusTransTasklet();
+    public CreateReconExceptionsTasklet createZelleMcReconExceptionsTasklet(
+            @Value("${cash.tran.except.insert}") String cashTranExceptInsert,
+            @Value("${cash.tran.stat.except.insert}") String cashTranStatExceptInsert,
+            @Value("${acct.ent.impacs.except.insert}") String acctEntImpacsExceptInsert) {
+        CreateReconExceptionsTasklet tasklet = new CreateReconExceptionsTasklet();
         tasklet.setDataSource(dataSource);
-        tasklet.setUnmatchedStatusQuery(unmatchedStatusQuery);
-        tasklet.setUnmatchedStatusInsertSql(unmatchedStatusInsertSql);
+        tasklet.setCashTranExceptInsert(cashTranExceptInsert);
+        tasklet.setCashTranStatExceptInsert(cashTranStatExceptInsert);
+        tasklet.setAcctEntImpacsExceptInsert(acctEntImpacsExceptInsert);
         return tasklet;
-    }
-
-    @Bean
-    @StepScope
-    public EndOfJobTasklet endOfJobTasklet(
-            @Value("${tch.recon.except.ent.rs2v.insert}") String exceptEntRS2vInsert) {
-        EndOfJobTasklet tasklet = new EndOfJobTasklet();
-        tasklet.setDataSource(dataSource);
-        tasklet.setExceptEntRS2vInsert(exceptEntRS2vInsert);
-        return tasklet;
-    }
-
-    // Define the Reader, Processor, and Writer beans
-    @Bean
-    @StepScope
-    public JdbcCursorItemReader<TchReconViewObject> viewItemReader(@Value("${tch.recon.view.query}") String sql) {
-        JdbcCursorItemReader<TchReconViewObject> reader = new JdbcCursorItemReader<>();
-        reader.setDataSource(dataSource);
-        reader.setSql(sql);
-        reader.setRowMapper(new TchReconRowMapper());  // Assuming TchReconRowMapper exists
-        return reader;
-    }
-
-    @Bean
-    @StepScope
-    public CompositeItemWriter<TchReconViewObject> compositeItemWriter() {
-        CompositeItemWriter<TchReconViewObject> writer = new CompositeItemWriter<>();
-        writer.setDelegates(Arrays.asList(acctEntryImpacsExceptItemWriter(), cashTranExceptItemWriter()));
-        return writer;
-    }
-
-    @Bean
-    @StepScope
-    public JdbcBatchItemWriter<TchReconViewObject> acctEntryImpacsExceptItemWriter() {
-        JdbcBatchItemWriter<TchReconViewObject> writer = new JdbcBatchItemWriter<>();
-        writer.setDataSource(dataSource);
-        writer.setSql("${tch.recon.acct.ent.impacs.except.insert}");
-        return writer;
-    }
-
-    @Bean
-    @StepScope
-    public JdbcBatchItemWriter<TchReconViewObject> cashTranExceptItemWriter() {
-        JdbcBatchItemWriter<TchReconViewObject> writer = new JdbcBatchItemWriter<>();
-        writer.setDataSource(dataSource);
-        writer.setSql("${tch.recon.cash.tran.except.insert}");
-        return writer;
     }
 
     // Job Listener Definition
     @Bean
     @JobScope
-    public TchReconBatchJobListener jobListener() {
-        return new TchReconBatchJobListener();
+    public CashExceptionsBatchJobListener jobListener() {
+        return new CashExceptionsBatchJobListener();
     }
+}
+
+// Tasklet Class Definitions
+@Component
+@StepScope
+class LoadReferenceDataTasklet implements Tasklet {
+
+    @Value("${batch.service.acct.plan.ref.query}")
+    private String acctPlanRefSql;
+
+    @Value("${batch.service.holiday.ref.query}")
+    private String holidayRefSql;
+
+    @Value("${batch.service.state.iso.ref.query}")
+    private String stateIsoRefSql;
+
+    @Value("${batch.service.tran.code.ref.query}")
+    private String tranCodeRefSql;
+
+    @Override
+    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
+        // Tasklet logic here
+        return RepeatStatus.FINISHED;
+    }
+
+    public void setAcctPlanRefSql(String acctPlanRefSql) { this.acctPlanRefSql = acctPlanRefSql; }
+    public void setHolidayRefSql(String holidayRefSql) { this.holidayRefSql = holidayRefSql; }
+    public void setStateIsoRefSql(String stateIsoRefSql) { this.stateIsoRefSql = stateIsoRefSql; }
+    public void setTranCodeRefSql(String tranCodeRefSql) { this.tranCodeRefSql = tranCodeRefSql; }
+}
+
+@Component
+@StepScope
+class ProcessReconExceptionsTasklet implements Tasklet {
+
+    @Value("${zelle.mc.recon.missing.in.cash.query}")
+    private String missingInCashSql;
+
+    @Value("${zelle.mc.recon.missing.in.dtb.query}")
+    private String missingInDtbSql;
+
+    @Value("${batch.service.acct.plan.ref.query}")
+    private String acctPlanRefSql;
+
+    @Autowired
+    private DataSource dataSource;
+
+    @Override
+    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
+        // Tasklet logic here
+        return RepeatStatus.FINISHED;
+    }
+
+    public void setDataSource(DataSource dataSource) { this.dataSource = dataSource; }
+    public void setMissingInCashSql(String missingInCashSql) { this.missingInCashSql = missingInCashSql; }
+    public void setMissingInDtbSql(String missingInDtbSql) { this.missingInDtbSql = missingInDtbSql; }
+    public void setAcctPlanRefSql(String acctPlanRefSql) { this.acctPlanRefSql = acctPlanRefSql; }
+}
+
+@Component
+@StepScope
+class CreateReconExceptionsTasklet implements Tasklet {
+
+    @Value("${cash.tran.except.insert}")
+    private String cashTranExceptInsert;
+
+    @Value("${cash.tran.stat.except.insert}")
+    private String cashTranStatExceptInsert;
+
+    @Value("${acct.ent.impacs.except.insert}")
+    private String acctEntImpacsExceptInsert;
+
+    @Autowired
+    private DataSource dataSource;
+
+    @Override
+    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
+        // Tasklet logic here
+        return RepeatStatus.FINISHED;
+    }
+
+    public void setDataSource(DataSource dataSource) { this.dataSource = dataSource; }
+    public void setCashTranExceptInsert(String cashTranExceptInsert) { this.cashTranExceptInsert = cashTranExceptInsert; }
+    public void setCashTranStatExceptInsert(String cashTranStatExceptInsert) { this.cashTranStatExceptInsert = cashTranStatExceptInsert; }
+    public void setAcctEntImpacsExceptInsert(String acctEntImpacsExceptInsert) { this.acctEntImpacsExceptInsert = acctEntImpacsExceptInsert; }
 }
